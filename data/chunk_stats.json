@@ -1,0 +1,70 @@
+{
+  "docs": 5,
+  "chunks": 30,
+  "min_tokens": 21,
+  "avg_tokens": 101.3,
+  "max_tokens": 208,
+  "sections_found": {
+    "hdfc-balanced-advantage-direct-growth": [
+      "HDFC Balanced Advantage Fund Direct Growth",
+      "Minimum investments",
+      "Understand terms",
+      "Exit load, stamp duty and tax",
+      "About HDFC Balanced Advantage Fund Direct Growth",
+      "Fund house"
+    ],
+    "hdfc-elss-tax-saver-direct-growth": [
+      "HDFC ELSS Tax Saver Fund Direct Plan Growth",
+      "Minimum investments",
+      "Understand terms",
+      "Exit load, stamp duty and tax",
+      "About HDFC ELSS Tax Saver Fund Direct Plan Growth",
+      "Fund house"
+    ],
+    "hdfc-equity-flexi-cap-direct-growth": [
+      "HDFC Flexi Cap Direct Plan Growth",
+      "Minimum investments",
+      "Understand terms",
+      "Exit load, stamp duty and tax",
+      "About HDFC Flexi Cap Direct Plan Growth",
+      "Fund house"
+    ],
+    "hdfc-large-cap-direct-growth": [
+      "HDFC Large Cap Fund Direct Growth",
+      "Minimum investments",
+      "Understand terms",
+      "Exit load, stamp duty and tax",
+      "About HDFC Large Cap Fund Direct Growth",
+      "Fund house"
+    ],
+    "hdfc-small-cap-direct-growth": [
+      "HDFC Small Cap Fund Direct Growth",
+      "Minimum investments",
+      "Understand terms",
+      "Exit load, stamp duty and tax",
+      "About HDFC Small Cap Fund Direct Growth",
+      "Fund house"
+    ]
+  },
+  "chunking_strategy": {
+    "hdfc-balanced-advantage-direct-growth": "section",
+    "hdfc-elss-tax-saver-direct-growth": "section",
+    "hdfc-equity-flexi-cap-direct-growth": "section",
+    "hdfc-large-cap-direct-growth": "section",
+    "hdfc-small-cap-direct-growth": "section"
+  },
+  "chunks_per_doc": {
+    "hdfc-balanced-advantage-direct-growth": 6,
+    "hdfc-elss-tax-saver-direct-growth": 6,
+    "hdfc-equity-flexi-cap-direct-growth": 6,
+    "hdfc-large-cap-direct-growth": 6,
+    "hdfc-small-cap-direct-growth": 6
+  },
+  "constants": {
+    "CHUNK_TARGET_TOKENS": 500,
+    "CHUNK_OVERLAP_RATIO": 0.15,
+    "MIN_CHUNK_CHARS": 30,
+    "MIN_SECTIONS_FOR_STRUCTURED_CHUNKING": 3,
+    "MAX_HEADING_CHARS": 80
+  }
+}

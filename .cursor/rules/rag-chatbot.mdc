@@ -1,0 +1,17 @@
+---
+description: Constraints for the HDFC MF facts-only RAG chatbot
+globs: ["**/*.py"]
+alwaysApply: true
+---
+
+- Python 3.11, src/ layout, full type hints, no untyped defs.
+- No business logic in src/app.py — it only calls src.chat_service.handle_message.
+- Every factual answer must carry exactly one source_url from data/sources.yaml.
+- Factual answers are capped at 3 sentences.
+- Never log, store, or echo user PII (PAN, Aadhaar, account numbers, OTP, email, phone).
+- Advice, returns, and grievance questions must be refused by src/guards/policy.py before retrieval.
+- All generation is grounded in retrieved chunk text; never invent numbers, dates, or scheme names.
+- No network calls at query time; no new dependencies without asking.
+- Config constants live in src/config.py; no magic numbers in logic modules.
+- Use pathlib, not string path concatenation. Use logging, not print, in library code.
+- Docstrings only, no inline comments. Module docstrings cite the architecture.md section implemented.

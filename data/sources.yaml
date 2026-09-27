@@ -1,0 +1,35 @@
+# Corpus allowlist and manifest (architecture.md §5.1, PRD §6.1).
+# This is the ONLY set of URLs the chatbot may cite (INV-1). Every chunk written to
+# the vector store must carry a source_url that appears in this file.
+
+amc: HDFC Mutual Fund
+corpus_note: >-
+  Cleaned text snapshots of 5 public Groww scheme pages. Regenerate with
+  `python -m src.ingest.load`; each regeneration bumps `fetched_at` and rewrites
+  data/corpus/*.md plus data/sources.md.
+
+sources:
+  - scheme_id: hdfc-large-cap-direct-growth
+    scheme_name: HDFC Large Cap Fund – Direct Growth
+    category: large_cap
+    source_url: https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth
+
+  - scheme_id: hdfc-equity-flexi-cap-direct-growth
+    scheme_name: HDFC Equity (Flexi Cap) Fund – Direct Growth
+    category: flexi_cap
+    source_url: https://groww.in/mutual-funds/hdfc-equity-fund-direct-growth
+
+  - scheme_id: hdfc-elss-tax-saver-direct-growth
+    scheme_name: HDFC ELSS Tax Saver – Direct Growth
+    category: elss
+    source_url: https://groww.in/mutual-funds/hdfc-elss-tax-saver-fund-direct-plan-growth
+
+  - scheme_id: hdfc-small-cap-direct-growth
+    scheme_name: HDFC Small Cap Fund – Direct Growth
+    category: small_cap
+    source_url: https://groww.in/mutual-funds/hdfc-small-cap-fund-direct-growth
+
+  - scheme_id: hdfc-balanced-advantage-direct-growth
+    scheme_name: HDFC Balanced Advantage Fund – Direct Growth
+    category: hybrid
+    source_url: https://groww.in/mutual-funds/hdfc-balanced-advantage-fund-direct-growth

@@ -1,0 +1,23 @@
+# vector store is rebuilt by `make ingest`
+data/chroma/
+data/embeddings_dump.txt
+# raw scraped pages are transient
+data/raw/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# env
+.venv/
+venv/
+.env
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
