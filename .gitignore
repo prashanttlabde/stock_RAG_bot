@@ -1,5 +1,7 @@
-# vector store is rebuilt by `make ingest`
-data/chroma/
+# The vector store IS committed (data/chroma/), not ignored: hosts like Render's
+# free tier have too little memory/build time to comfortably re-embed at deploy
+# time, so the app loads this prebuilt index instead of rebuilding it at startup.
+# Re-run `make ingest` and commit the result whenever data/corpus/ changes.
 data/embeddings_dump.txt
 # raw scraped pages are transient
 data/raw/

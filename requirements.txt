@@ -1,3 +1,16 @@
+# CPU-only torch: sentence-transformers only ever runs CPU inference here (no GPU
+# on Render or similar hosts, and none needed for this corpus's size), but plain
+# `torch` from PyPI pulls in the CUDA-enabled build, which is several times larger
+# and easily blows a 512MB-RAM free-tier build. Pinning the exact version against
+# PyTorch's own CPU wheel index is what makes pip resolve the small build instead;
+# verified against the index (`pip install torch==2.14.0 --extra-index-url
+# https://download.pytorch.org/whl/cpu --dry-run` resolves to
+# `torch-2.14.0+cpu-*.whl`, not the default PyPI wheel). Bump this pin together
+# with sentence-transformers, and re-check it resolves to a `+cpu` wheel before
+# committing the bump.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0
+
 chromadb>=0.5.0
 sentence-transformers>=3.0.0
 streamlit>=1.40.0

@@ -6,11 +6,15 @@ This file contains no business logic. Every message goes through exactly one cal
 that call already returned. Chat history lives in `st.session_state` for the life of
 the browser tab and nowhere else: nothing in this module writes to disk, and the
 history is gone the moment the session ends (architecture.md §17, INV-3).
+
+**Load order is deliberate**, for memory-constrained hosts (Render's free tier and
+similar): the page shell renders before this project's own modules are imported at
+all, and the embedding model + Chroma collection are warmed up explicitly, behind a
+spinner, right after -- see the comments at each step below.
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -23,21 +27,80 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
-from src.chat_service import EXAMPLE_QUESTIONS, handle_message
-from src.generate.no_answer import covered_schemes_with_dates
-from src.guards.copy import DISCLAIMER
-from src.ingest.store import collection_exists
-from src.types import ChatReply
-
-WELCOME = (
+# The page shell renders here, before a single line of this project's own code is
+# imported. Importing the retrieval/generation chain pulls in chromadb and
+# sentence-transformers (torch) transitively -- profiled at ~5 seconds of pure
+# import time on a fast local machine, before the embedding model has even loaded,
+# and slower on a constrained host. Streamlit streams each st.* call to the
+# browser as it executes rather than batching them at the end of the script, so
+# everything below is visible immediately instead of behind that import cost.
+st.set_page_config(page_title="HDFC MF Facts Assistant", layout="centered")
+st.title("HDFC MF Facts Assistant")
+st.caption(
     "Ask about HDFC mutual fund scheme facts — expense ratio, exit load, minimum "
     "SIP, lock-in, benchmark, riskometer."
 )
+
+import re  # noqa: E402
+
+from src.chat_service import EXAMPLE_QUESTIONS, handle_message  # noqa: E402
+from src.generate.no_answer import covered_schemes_with_dates  # noqa: E402
+from src.guards.copy import DISCLAIMER  # noqa: E402
+from src.ingest.embed import embed_query  # noqa: E402
+from src.ingest.store import collection_exists, get_collection  # noqa: E402
+from src.logging_config import get_logger  # noqa: E402
+from src.types import ChatReply  # noqa: E402
+
+logger = get_logger("app")
+
+st.info(DISCLAIMER)
 
 INGEST_MISSING_MESSAGE = (
     "The search index hasn't been built yet. Run `make ingest` from the project "
     "root, then reload this page."
 )
+
+
+@st.cache_resource(show_spinner="Loading the embedding model and search index…")
+def _warm_up() -> int:
+    """Load the embedding model and open the Chroma collection once per process.
+
+    `st.cache_resource` caches the *return value* for the life of the server
+    process, across every session and rerun -- the same lifetime `embed.py`'s and
+    `store.py`'s own module-level singletons already keep, so this changes
+    nothing about how many times the model or collection actually load. What it
+    adds is the spinner: without this, that first load happens silently inside
+    whatever the first real query is, which is exactly what a "blank page"
+    complaint on a slow host looks like from the outside.
+
+    Raises rather than catches its own failure on purpose: `st.cache_resource`
+    does not cache a raised exception, so a transient failure (a slow model
+    download, a cold disk) is retried on the next page load instead of being
+    stuck returning the same failure until the process restarts. The caller below
+    is what decides what a user sees when this fails.
+
+    Returns the collection's chunk count, which doubles as the "is the store
+    actually built" check the rest of the page uses -- `get_collection` is only
+    called after `collection_exists` confirms it will not have to *create* one:
+    `get_collection` uses `get_or_create_collection`, so calling it against a
+    name that does not exist yet would silently create an empty one on disk.
+    """
+    embed_query("warm up")
+    return get_collection().count() if collection_exists() else 0
+
+
+try:
+    _store_chunk_count: int | None = _warm_up()
+except Exception as exc:
+    logger.warning("app: startup warm-up failed (%s)", type(exc).__name__)
+    _store_chunk_count = None
+    st.error(
+        "Something went wrong loading the model or the search index. Please "
+        "reload the page."
+    )
+
+if _store_chunk_count == 0:
+    st.error(INGEST_MISSING_MESSAGE)
 
 # Neutralizes markdown syntax (links, emphasis, headings) in a string before it is
 # rendered with `st.markdown`. Applied only to the user's own typed message: an
@@ -94,19 +157,10 @@ def _turn_counts() -> tuple[int, int]:
     return answered, other
 
 
-st.set_page_config(page_title="HDFC MF Facts Assistant", layout="centered")
-
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 if "pending_question" not in st.session_state:
     st.session_state["pending_question"] = None
-
-st.title("HDFC MF Facts Assistant")
-st.caption(WELCOME)
-st.info(DISCLAIMER)
-
-if not collection_exists():
-    st.error(INGEST_MISSING_MESSAGE)
 
 example_cols = st.columns(len(EXAMPLE_QUESTIONS))
 for i, (col, example) in enumerate(zip(example_cols, EXAMPLE_QUESTIONS, strict=True)):

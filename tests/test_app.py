@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from src.chat_service import EXAMPLE_QUESTIONS
@@ -18,6 +19,20 @@ from src.guards.copy import AMFI_INVESTOR_EDUCATION_URL, DISCLAIMER
 
 APP_PATH = str(Path(__file__).resolve().parent.parent / "src" / "app.py")
 TIMEOUT = 60
+
+
+@pytest.fixture(autouse=True)
+def _clear_resource_cache() -> None:
+    """Clear `app.py`'s `@st.cache_resource`-wrapped warm-up before every test.
+
+    `st.cache_resource` caches its return value process-wide, keyed by the
+    function's own code -- not per `AppTest` run, so a prior test's real,
+    successful warm-up (chunk count 30) is still returned to a later test that
+    expects a mocked, empty store, silently ignoring that test's monkeypatch
+    entirely. Clearing it here trades a little speed (each test now genuinely
+    re-warms) for every test being isolated from every other.
+    """
+    st.cache_resource.clear()
 
 
 def _run() -> AppTest:

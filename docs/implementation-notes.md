@@ -1341,3 +1341,90 @@ unit; this one has no candidate unit that both matches a term and carries a valu
 Confirmed via a direct call with no history, so it is unrelated to this addendum.
 Flagged to the user rather than fixed here, since it is out of this task's scope and
 specific to one fact on one scheme.
+
+---
+
+## Post-Phase-8 addendum: deploy-friendly for a 512MB host (2026-09-27)
+
+The Streamlit app showed a blank page on Render's free tier. Four changes, all
+aimed at the same two constraints a free-tier host has that a laptop does not:
+very little RAM, and no visible feedback while something slow happens.
+
+### CPU-only torch
+
+`sentence-transformers` never runs anything but CPU inference here (no GPU on
+Render, and this corpus is 30 chunks), but plain `torch` from PyPI installs the
+CUDA-enabled build, which is several times larger and can exhaust a 512MB build.
+`requirements.txt` now pins `torch==2.14.0` with
+`--extra-index-url https://download.pytorch.org/whl/cpu` above it. Verified against
+the real index rather than assumed: `pip install torch==999.999.999 --index-url
+.../cpu --dry-run` listed every version the CPU index actually has (up to 2.14.0),
+and `pip install torch==2.14.0 --extra-index-url .../cpu --dry-run` resolves to
+`torch-2.14.0+cpu-*.whl`, not the default PyPI wheel -- confirmed for the exact
+Python 3.13 / linux_x86_64 target a Render instance would use.
+
+### The title now renders before this project's own code is imported
+
+`import src.chat_service` (and the modules it pulls in) transitively imports
+chromadb and sentence-transformers/torch -- profiled at ~5 seconds of pure import
+time locally, before the embedding model has even loaded. Since Python cannot
+reach a single line of `app.py` past its own imports until they finish, and all of
+this project's imports used to sit above `st.set_page_config`, the page had
+nothing to show for that whole stretch. `st.set_page_config`, the title, and the
+welcome caption now run first, immediately after `import streamlit as st` and
+before any `from src...` import -- Streamlit streams each `st.*` call to the
+browser as it executes rather than batching them, so this is visible right away.
+
+### Model and store loading is now explicit, cached, and spinner-visible
+
+`embed.py` and `store.py` already keep process-lifetime singletons for the model
+and the Chroma client, so nothing was reloading redundantly. What was missing was
+visibility: that first load happened silently inside whichever query triggered it
+first, which from a user's side looks identical to a hang. A new `_warm_up()` in
+`app.py`, wrapped in `@st.cache_resource(show_spinner=...)`, calls `embed_query`
+and opens the collection once, right after the page shell renders. `st.cache_resource`
+caches the return value process-wide, matching the singletons' existing lifetime,
+so this adds a spinner without changing how often anything actually loads.
+`_warm_up()` deliberately does not catch its own exceptions -- `st.cache_resource`
+does not cache a raised exception, so a transient failure (a slow model download,
+a cold disk) is retried on the next page load instead of being stuck returning the
+same failure until the process restarts; the try/except lives one level up, around
+the *call* to `_warm_up()`, purely to show a friendly message for that one failed
+run.
+
+**A real caching gotcha this created for tests, not for production:** `st.cache_resource`
+caches by the function's own code, not per script run, so `tests/test_app.py`'s
+`AppTest`-based tests all share one process and therefore one cache. A test that
+mocks `collection_exists` to simulate a missing store got back the *previous*
+test's real, successful warm-up (chunk count 30) instead, silently ignoring its own
+monkeypatch. Fixed with an autouse fixture that calls `st.cache_resource.clear()`
+before every test in that file -- correct in production, where there is only ever
+one process and clearing is never needed.
+
+### The vector store is now committed, not rebuilt at deploy time
+
+`data/chroma/` (1.3MB) is no longer gitignored. A 512MB free-tier build has too
+little memory and too little build-time budget to comfortably re-run the full
+embedding pipeline on every deploy, and doing so also needs reliable network
+access to Hugging Face at build time. Shipping the already-built index removes
+both requirements from the deploy path entirely: `pip install -r requirements.txt`
+is now the whole Render build command, no `make ingest`/`--rebuild` step. Re-run
+`make ingest` locally and commit the result whenever `data/corpus/` changes --
+documented directly in `.gitignore` at the point it stops ignoring this path, so
+the reason is visible exactly where someone would otherwise assume it is still
+ignored.
+
+### Verified
+
+* Full suite: **418 passed**, lint green, `tests/test_app.py`'s cache-isolation fix
+  confirmed by re-running with and without it (fails predictably without the
+  autouse fixture, in exactly the way described above).
+* `pip install -r requirements.txt --dry-run` resolves cleanly end to end, torch
+  included, confirming the file's syntax and index configuration are valid.
+* A real `streamlit run src/app.py` launch, not just `AppTest`, still starts clean
+  with the new load order (same verification habit Phase 8 established after the
+  `sys.path` bug that only a real launch had caught).
+
+**Not verified: an actual Render deployment.** All of the above is verified
+locally and via the test suite; Render's own memory ceiling, network egress, and
+build-time behavior can only be confirmed by deploying there.
