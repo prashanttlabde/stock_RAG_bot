@@ -60,8 +60,18 @@ _ABBREVIATIONS = frozenset(
     }
 )
 
-# A unit that contains a digit is carrying a fact; one that does not is a label.
+# A unit carries a fact, rather than being a bare label, if it has a digit ("Min.
+# for SIP: ₹100") or a "Label: value" shape whose value is non-numeric text ("Exit
+# load: Nil"). The second form matters: a digit-only check ties "Exit load: Nil"
+# with its own section title "Exit load, stamp duty and tax" on every ranking
+# criterion generate_template uses, and the title wins by being the longer unit --
+# so the answer to "what is the exit load?" was the section title, not "Nil".
 _HAS_VALUE = re.compile(r"\d")
+_LABEL_VALUE = re.compile(r":\s*\S")
+
+
+def _carries_value(unit: str) -> bool:
+    return bool(_HAS_VALUE.search(unit) or _LABEL_VALUE.search(unit))
 
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 
@@ -268,7 +278,7 @@ def generate_template(question: str, hits: list[RetrievalHit]) -> str:
             enumerate(units),
             key=lambda pair: (
                 -len(matched_terms(terms, pair[1])),
-                -bool(_HAS_VALUE.search(pair[1])),
+                -_carries_value(pair[1]),
                 -len(pair[1]),
                 pair[0],
             ),
@@ -282,7 +292,7 @@ def generate_template(question: str, hits: list[RetrievalHit]) -> str:
             unit_terms = set(matched_terms(terms, unit))
             if not unit_terms:
                 continue
-            if selected and (unit_terms <= covered or not _HAS_VALUE.search(unit)):
+            if selected and (unit_terms <= covered or not _carries_value(unit)):
                 continue
             key = " ".join(unit.lower().split())
             if any(key in other or other in key for other in seen):
@@ -398,7 +408,7 @@ def _complete_label(
     """
     if _normalized(section) != _GLOSSARY_SECTION:
         return selected
-    if len(selected) >= config.MAX_ANSWER_SENTENCES or _HAS_VALUE.search(selected[0][1]):
+    if len(selected) >= config.MAX_ANSWER_SENTENCES or _carries_value(selected[0][1]):
         return selected
     position = selected[0][0]
     follower = position + 1

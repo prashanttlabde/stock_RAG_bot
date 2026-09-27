@@ -30,6 +30,13 @@ EMBED_BATCH_SIZE = 32
 CHROMA_COLLECTION = "mf_faq_hdfc"
 CHROMA_SPACE = "cosine"
 
+# How many previous turns `chat_service.handle_message` will look back through to
+# resolve a scheme for a follow-up question that names none itself ("what about the
+# minimum SIP?" after asking about HDFC Small Cap). Only ever used when the current
+# question names no scheme at all -- in-corpus or out-of-corpus -- so a follow-up
+# that switches funds, or that names a competing brand, is never overridden by it.
+MEMORY_WINDOW = 10
+
 TOP_K = 4
 # Tuned by `python scripts/tune_floor.py` against a 15-query labelled set on
 # 2026-09-27: 8/8 answerable answered and 0 false answers across 0.30-0.50, so 0.40

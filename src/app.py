@@ -144,7 +144,12 @@ if question:
     with st.chat_message("user"):
         st.markdown(_escape_markdown(question))
 
-    reply = handle_message(question)
+    history = [
+        m["reply"]
+        for m in st.session_state["messages"]
+        if m["role"] == "assistant" and m.get("reply") is not None
+    ]
+    reply = handle_message(question, history=history)
     st.session_state["messages"].append({"role": "assistant", "reply": reply})
     with st.chat_message("assistant"):
         _render_reply(reply, show_retrieved)

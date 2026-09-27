@@ -1242,3 +1242,102 @@ a temp directory, as `tests/test_store.py` and `tests/test_pipeline.py` already 
   messages rendered afterward).
 * The real `data/chroma` store is unchanged after the full test run: still exactly
   one collection (`mf_faq_hdfc`), still 30 chunks.
+
+---
+
+## Post-Phase-8 addendum: conversation memory for retrieval (2026-09-27)
+
+`handle_message(question, history=None)` gained an optional `history` parameter: up
+to the last `config.MEMORY_WINDOW` (10) of the caller's own prior `ChatReply`s. When
+the current question names no scheme at all -- not an indexed one, not a competing
+brand, not a known-and-absent HDFC scheme -- it resolves the most recently discussed
+scheme from that history and uses it to scope retrieval, so "what about the minimum
+SIP amount?" after asking about HDFC Small Cap answers about HDFC Small Cap instead
+of running an unscoped search or failing. `src/app.py` passes its own
+`st.session_state["messages"]` as `history`; omitting the parameter (every existing
+caller) behaves exactly as before.
+
+### Memory is session-scoped by construction, not by discipline
+
+This module already had a global, cross-session ring buffer (`_recent_turns`, behind
+`recent_turns()`) for the debug panel. It was never a candidate for this feature:
+using it for retrieval would let one browser tab's in-progress fund leak into
+another tab's follow-up question on a shared server. `history` is instead an
+argument the caller owns and passes in explicitly, so there is no way to wire this
+feature up wrong and get cross-session leakage -- the only history `handle_message`
+ever sees is whatever a specific caller hands it for that specific call.
+
+### Two things had to be fixed before memory actually worked, not just resolved
+
+Resolving the right scheme_id was the easy half. `retrieve(question, scheme_id=...)`
+only adds a metadata filter; it does not change what the question's embedding
+means, and a bare follow-up like "what about the minimum SIP amount?" or "and the
+risk level?" embeds too weakly to clear `SIMILARITY_FLOOR` *regardless* of which
+chunks it is filtered against, because cosine similarity reflects the query's own
+semantic content, not which subset was searched. Phase 4's own notes had already
+measured and named this precisely -- naming the scheme lifts a question's top
+similarity by 0.15-0.48, enough that 5 of 7 unscoped attribute questions fall below
+the floor on their own -- and suggested "resolve the scheme and re-embed before
+searching" as the fix, rather than lowering the floor. This addendum is that fix:
+`_add_remembered_scheme_to_query` prepends the resolved scheme's full display name
+to the question before it reaches `retrieve`, only when memory (not the question
+itself) supplied the scheme.
+
+A first version prepended the shortest `SCHEME_ALIASES` entry instead of the full
+display name -- "80c" for the ELSS scheme, since it ties on length with "tax" but is
+found first while building the reverse lookup. Confirmed empirically that this does
+not reliably anchor the embedding at all (0 hits for "80c what about its exit
+load?", and even "elss" alone also failed); the full display name
+("HDFC ELSS Tax Saver – Direct Growth") worked for all 5 schemes, since it is close
+to how each scheme names itself in its own corpus text. Fixed by building the anchor
+from `load_sources()`'s `scheme_name` instead of `SCHEME_ALIASES`.
+
+### A pre-existing generation bug this newly exercised, and fixed
+
+With retrieval finally finding the right chunk, "what about its exit load?" (after
+discussing ELSS) answered *"HDFC ELSS Tax Saver – Direct Growth: Exit load, stamp
+duty and tax"* -- the section title, not the fact. `generate_template` ranks a
+chunk's units by term matches, then by whether a unit "carries a value"
+(`_HAS_VALUE`, a digit) as a tiebreak, then by length. Both "Exit load, stamp duty
+and tax" (the title) and "Exit load: Nil" (the fact) match the same two terms, and
+neither contains a digit -- ELSS genuinely has no exit load, so its value is the word
+"Nil" -- so the tie fell to "longer unit wins", and the title is longer than "Exit
+load: Nil". `_carries_value` now also recognises a `"Label: <non-empty text>"` shape
+regardless of whether the value has a digit in it, which is what every other hero-
+block fact in this corpus already looks like; the digit-only cases (SIP amounts, NAV,
+expense ratio, all elsewhere in the same corpus) were and remain unaffected, since
+they already had a digit and already passed the old check.
+
+### Verified
+
+* `tests/test_chat_service.py` gained `TestInferSchemeFromHistory`,
+  `TestNamesAnyScheme`, and `TestConversationMemory` (15 tests): a scheme-less
+  follow-up resolves the prior scheme; naming a different scheme overrides memory;
+  naming a competing brand or an out-of-corpus HDFC scheme is never overridden by
+  memory; a scheme more than `MEMORY_WINDOW` turns back is not found; guardrails
+  still refuse before retrieval regardless of history (a `retrieve` spy that raises
+  if called, exactly as Phase 7's own INV-4 tests do); `history=None` and omitting
+  the parameter produce identical answers; a 3-turn memory-driven conversation
+  leaves `data/` byte- and mtime-identical.
+* A live 10-turn conversation exercising every path -- scheme continuity across 3
+  turns, an explicit scheme switch, a guard refusal and a PII refusal interleaved
+  (history must survive them without breaking), an out-of-corpus follow-up, and a
+  second independent scheme thread -- produced correct, cited answers at every step
+  with no exception.
+* Full suite: **418 passed**, lint green.
+
+### Found, not fixed here: a second, unrelated pre-existing generation bug
+
+*"What is the benchmark of HDFC Balanced Advantage?"* -- asked directly, with no
+memory involved at all -- answers *"HDFC Balanced Advantage Fund – Direct Growth:
+Fund benchmark"*, again just the label. `data/corpus/hdfc-balanced-advantage-direct-
+growth.md` has this fact as two separate lines (`Fund benchmark` / `NIFTY 50 Hybrid
+Composite Debt 50:50 Index`), unlike every other scheme's single-line `Fund
+benchmark: <index>`, so `split_units`' newline-based splitting makes them two
+separate units and the value-bearing one matches zero question terms (`benchmark`
+is in the label unit, not the value unit) and is never selected at all -- this is a
+different failure shape than the exit-load bug above (that one selected the wrong
+unit; this one has no candidate unit that both matches a term and carries a value).
+Confirmed via a direct call with no history, so it is unrelated to this addendum.
+Flagged to the user rather than fixed here, since it is out of this task's scope and
+specific to one fact on one scheme.

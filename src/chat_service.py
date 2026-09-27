@@ -2,16 +2,27 @@
 
 `handle_message` is the entire runtime sequence for a single turn -- normalize,
 guard, retrieve, generate, format -- assembled in exactly one place. That is what
-makes two invariants provable rather than merely intended:
+makes these invariants provable rather than merely intended:
 
 * **INV-4** -- a refusal from `check_query` returns immediately, before `retrieve`
   is ever called, so advice/returns/grievance/PII text never reaches the vector
-  store or the generator.
+  store or the generator. This holds regardless of `history` (below): memory is
+  consulted only after the guard has already allowed the question through.
 * **INV-3** -- nothing here writes to disk. `ChatTurn` is a transient, in-memory-only
   debug record for the instructor demo (architecture.md §14); the ring buffer this
   module keeps dies with the process, and the except block never logs the raw
   question, so a PII-flagged message that somehow reaches an exception path still
   never touches a log line.
+
+**Conversation memory is session-scoped, not process-global.** `handle_message`
+takes an optional `history` -- the caller's own prior `ChatReply`s, oldest first --
+and uses up to the last `config.MEMORY_WINDOW` of them to resolve which scheme a
+scheme-less follow-up question ("what about the minimum SIP?") is about. Nothing
+in this module keeps its own copy of a session's history the way `_recent_turns`
+below keeps a *global*, cross-session debug buffer: using that global buffer for
+retrieval would leak one user's in-progress fund into another user's follow-up
+question on a shared server, which is exactly why `recent_turns()` stays a
+debug-only view rather than a memory source.
 
 Every domain exception (`CorpusError`, `IngestError`, `RetrievalError`,
 `GenerationError`, `PolicyRefusal`) is caught here and turned into a friendly
@@ -23,7 +34,9 @@ from __future__ import annotations
 import time
 import uuid
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 from src import config
 from src.errors import ChatbotError, RetrievalError
@@ -31,8 +44,14 @@ from src.generate.answer import answer_question
 from src.generate.no_answer import no_answer_message
 from src.guards.copy import DISCLAIMER
 from src.guards.policy import check_query
+from src.ingest.load import load_sources
 from src.logging_config import get_logger
-from src.retrieve.retriever import retrieve
+from src.retrieve.retriever import (
+    detect_out_of_corpus_fund_house,
+    detect_out_of_corpus_scheme,
+    detect_scheme_id,
+    retrieve,
+)
 from src.types import Answer, ChatReply, Refusal, RetrievalHit
 
 logger = get_logger("chat")
@@ -110,6 +129,77 @@ def _normalize(question: str) -> str:
     return " ".join(question.split()).strip()[: config.MAX_QUERY_CHARS]
 
 
+def _names_any_scheme(question: str) -> bool:
+    """Whether `question` mentions a scheme at all -- indexed, or known-and-absent.
+
+    Both cases mean "do not consult memory": an indexed mention should be used
+    directly rather than overridden by an older one, and a competing brand or an
+    out-of-corpus HDFC scheme is a definitive miss that memory must not paper over
+    by quietly substituting whatever fund was discussed earlier.
+    """
+    return (
+        detect_scheme_id(question) is not None
+        or detect_out_of_corpus_fund_house(question) is not None
+        or detect_out_of_corpus_scheme(question) is not None
+    )
+
+
+def _infer_scheme_from_history(history: Sequence[ChatReply]) -> str | None:
+    """The most recently discussed scheme_id in `history`, most-recent first.
+
+    Looks at `answer.scheme_id` rather than re-running scheme detection on old
+    question text: it is set from the primary retrieved chunk, so it reflects what
+    was actually discussed, and a no-answer turn about a real scheme still sets it
+    (a follow-up after a legitimate near-miss should still resolve to that scheme).
+    A guard refusal never contributes: `handle_message` gives it no `answer` at
+    all, so `entry.answer` is `None` for those turns.
+    """
+    for entry in reversed(history[-config.MEMORY_WINDOW :]):
+        if entry.answer is not None and entry.answer.scheme_id:
+            return entry.answer.scheme_id
+    return None
+
+
+@lru_cache(maxsize=1)
+def _scheme_display_names() -> dict[str, str]:
+    """scheme_id -> human name from the allowlist, or an empty map if unreadable.
+
+    Same pattern `generate/answer.py` and `generate/no_answer.py` already use for
+    the same lookup: a missing or unreadable manifest must not break a chat turn,
+    it should just mean the memory anchor below falls back to no anchor at all.
+    """
+    try:
+        return {ref.scheme_id: ref.scheme_name for ref in load_sources()}
+    except Exception as exc:  # pragma: no cover - manifest is always present in this repo
+        logger.info("chat: scheme names unavailable for memory anchor (%s)", type(exc).__name__)
+        return {}
+
+
+def _add_remembered_scheme_to_query(question: str, scheme_id: str) -> str:
+    """Prepend the scheme's full display name to `question` before it is embedded.
+
+    A metadata filter alone is not enough: "what about the risk level?" embeds
+    weakly regardless of which chunks it is filtered to, because cosine similarity
+    reflects the query's own semantic content, not which subset was searched
+    against. Phase 4's own notes measured this precisely -- naming the scheme lifts
+    a question's top similarity by 0.15-0.48, enough that 5 of 7 unscoped attribute
+    questions fall below `SIMILARITY_FLOOR` on their own -- and named the fix as
+    "resolve the scheme and re-embed before searching" rather than lowering the
+    floor. This is that fix, applied only to a question memory has resolved a
+    scheme for; a question that already names its own scheme reaches `retrieve`
+    unchanged, since it already carries this same anchor.
+
+    The full display name ("HDFC ELSS Tax Saver – Direct Growth"), not a short
+    alias from `SCHEME_ALIASES`: a first version used the shortest alias per
+    scheme (picking "80c" for the ELSS scheme, since it ties on length with "tax"
+    but is found first), which does not reliably embed near the corpus text at
+    all -- confirmed empirically for all 5 schemes, the full name always does,
+    since it is close to how each scheme names itself in its own corpus text.
+    """
+    name = _scheme_display_names().get(scheme_id)
+    return f"{name} {question}" if name else question
+
+
 def format_reply(answer: Answer) -> str:
     """Assemble the visible text for a factual answer. The only function that does.
 
@@ -181,8 +271,15 @@ def _refusal_reply(
     )
 
 
-def handle_message(question: str) -> ChatReply:
+def handle_message(question: str, history: Sequence[ChatReply] | None = None) -> ChatReply:
     """Run one chat turn: guard -> retrieve -> generate -> format.
+
+    `history` is the caller's own prior `ChatReply`s for this session, oldest
+    first -- omit it (the default) for a stateless call, exactly as before this
+    parameter existed. When given, up to the last `config.MEMORY_WINDOW` entries
+    are consulted to resolve a scheme for a question that names none itself; see
+    `_infer_scheme_from_history`. It is never consulted for a question that already
+    names a scheme, in-corpus or out-of-corpus, and it never affects the guard.
 
     A refused or empty message returns before any retrieval happens (INV-4). Any
     domain exception is caught and rendered as a friendly refusal; the except block
@@ -225,8 +322,20 @@ def handle_message(question: str) -> ChatReply:
                 link_label=decision.link_label,
             )
 
+        remembered_scheme_id = None
+        query_for_retrieval = cleaned
+        if history and not _names_any_scheme(cleaned):
+            remembered_scheme_id = _infer_scheme_from_history(history)
+            if remembered_scheme_id:
+                query_for_retrieval = _add_remembered_scheme_to_query(cleaned, remembered_scheme_id)
+                logger.info(
+                    "chat: request_id=%s scheme %r resolved from conversation memory",
+                    request_id,
+                    remembered_scheme_id,
+                )
+
         t0 = time.perf_counter()
-        result = retrieve(cleaned)
+        result = retrieve(query_for_retrieval, scheme_id=remembered_scheme_id)
         logger.info(
             "chat: stage=retrieve request_id=%s hits=%d latency_ms=%.1f",
             request_id,
